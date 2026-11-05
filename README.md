@@ -2,7 +2,7 @@
 
 Diagnósticos locais para o **Hermes Desktop**: escolha um quadro/cartão ou perfil/sessão, veja o histórico em timeline por tipo de evento, inspecione processos e capture pilhas Python com `py-spy`. Inclui recuperação **restrita a subprocessos Git pertencentes à execução escolhida**.
 
-> Versão inicial **0.1.0 (pré-lançamento)**. Testes automatizados executados com bancos SQLite simulados; ainda **não testado dentro de uma instalação Windows do Hermes 0.22.7**. Não é uma correção definitiva para o bug de `version_info.py`; apenas ajuda a identificá-lo e, em um caso estritamente verificável, pode liberar o processo Git.
+> Versão inicial **0.1.1 (pré-lançamento)**. Testes automatizados executados com bancos SQLite simulados; ainda **não testado dentro de uma instalação Windows do Hermes 0.22.7**. Não é uma correção definitiva para o bug de `version_info.py`; apenas ajuda a identificá-lo e, em um caso estritamente verificável, pode liberar o processo Git.
 
 ## Compatibilidade e fontes
 
@@ -84,7 +84,7 @@ tests/test_plugin.py
 ```bash
 python -m pip install fastapi pydantic
 python -m unittest discover -s tests -v
-node --check desktop/plugin.js
+node tests/check_desktop.mjs
 ```
 
 Os testes geram bancos SQLite descartáveis em `/tmp` e simulam processos. **Não executam nenhuma recuperação real**.
