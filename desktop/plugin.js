@@ -104,7 +104,7 @@ function Inspector({ctx}) {
 
   return H('main',{style:styles.page},
     H('div',{style:styles.header}, H('div',null,H('h1',{style:{fontSize:23,fontWeight:750,margin:'0 0 3px'}},'Bot Inspector'),small('Diagnóstico local • leitura de sessões e Kanban • sem chamadas ao modelo')),
-      H('div',{style:styles.row}, small(`v${inventory.version||'0.1.0'}`),secondaryButton('Copiar JSON',copyReport,!report&&!diagnosis),secondaryButton('Atualizar',()=>{loadTimeline();if(mode==='board'&&diagnosis)inspect()},!selectValue))),
+      H('div',{style:styles.row}, small(`v${inventory.version||'0.1.1'}`),secondaryButton('Copiar JSON',copyReport,!report&&!diagnosis),secondaryButton('Atualizar',()=>{loadTimeline();if(mode==='board'&&diagnosis)inspect()},!selectValue))),
     error&&H('div',{role:'alert',style:{border:'1px solid #8d4c40',background:'#391f1b',color:'#ffd2cb',padding:12,borderRadius:8,marginBottom:12}},error),
     H('section',{style:{...styles.panel,marginBottom:12}},
       H('div',{style:{...styles.row,marginBottom:14}},
@@ -128,7 +128,7 @@ function Inspector({ctx}) {
           H('span',{style:{color:palette.accent}},glyph[x.kind]||'·'),
           H('span',{style:{...styles.mono,color:palette.muted}},x.time?stamp(x.time).split(' ').pop():'—'),
           H('div',{style:{minWidth:0}},H('button',{type:'button',onClick:()=>toggleExpanded(i),style:{background:'transparent',border:0,padding:0,color:palette.text,fontWeight:650,cursor:'pointer',textAlign:'left',maxWidth:'100%',overflowWrap:'anywhere'}},`${x.kind.toUpperCase()} · ${x.title}`),
-            H('p',{style:{...styles.code,display:expanded.has(i)?'block':'-webkit-box',WebkitLineClamp:expanded.has(i)?undefined:2,WebkitBoxOrient:'vertical',overflow:'hidden'}},x.detail||'—'))))))))),
+            H('p',{style:{...styles.code,display:expanded.has(i)?'block':'-webkit-box',WebkitLineClamp:expanded.has(i)?undefined:2,WebkitBoxOrient:'vertical',overflow:'hidden'}},x.detail||'—'))))))),
     mode==='board'&&H('section',{style:{...styles.panel,marginBottom:12}},
       title('Saúde do worker e recuperação'),
       !diagnosis?small('Clique em Diagnosticar para verificar processos, progresso, patch Git e heartbeat.'):
@@ -152,7 +152,7 @@ function Inspector({ctx}) {
           H('p',{style:styles.sub},recovery.available?`Alvo confirmado: PID ${recovery.target?.pid} · ${recovery.target?.command}`:recovery.reason),
           recovery.available&&H('div',{style:{...styles.row,marginTop:8}},
             H('input',{value:recoveryText,onChange:e=>setRecoveryText(e.target.value),placeholder:'Digite ENCERRAR GIT',style:styles.control}),
-            primaryButton('Encerrar subprocesso Git',apply,recoveryText!=='ENCERRAR GIT'||!!busy))))))
+            primaryButton('Encerrar subprocesso Git',apply,recoveryText!=='ENCERRAR GIT'||!!busy)))))
   )
 }
 
