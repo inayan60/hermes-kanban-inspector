@@ -2,7 +2,7 @@
 
 Diagnósticos locais para o **Hermes Desktop**: escolha um quadro/cartão ou perfil/sessão, veja o histórico em timeline por tipo de evento, inspecione processos e capture pilhas Python com `py-spy`. Inclui recuperação **restrita a subprocessos Git pertencentes à execução escolhida**.
 
-> Versão inicial **0.1.1 (pré-lançamento)**. Testes automatizados executados com bancos SQLite simulados; ainda **não testado dentro de uma instalação Windows do Hermes 0.22.7**. Não é uma correção definitiva para o bug de `version_info.py`; apenas ajuda a identificá-lo e, em um caso estritamente verificável, pode liberar o processo Git.
+> Versão inicial **0.1.2 (pré-lançamento)**. Testes automatizados executados com bancos SQLite simulados; interface e leitura de timeline **testadas no Hermes Desktop 0.22.7 pelo usuário**; a correção de 404 e a recuperação ainda não foram validadas em Windows. Não é uma correção definitiva para o bug de `version_info.py`; apenas ajuda a identificá-lo e, em um caso estritamente verificável, pode liberar o processo Git.
 
 ## Compatibilidade e fontes
 
@@ -31,6 +31,18 @@ hermes plugins install "file:///C:/CAMINHO/hermes-kanban-inspector" --enable
 ```
 
 Substitua `CAMINHO` pelo caminho real. Em **Capabilities → Plugins**, verifique as duas metades (Desktop / Agent). Reinicie o gateway após habilitar o backend. Não copie scripts para dentro da árvore `hermes-agent` nem edite `config.yaml` manualmente.
+
+## 404 intermitente ao alternar perfis (Hermes Desktop)
+
+O texto exato `404: {"detail":"Plugin not found"}` vem do gate de acesso a plugins do Hermes, não das consultas SQLite. O Hermes 0.22.7 pode encaminhar `ctx.rest` para o backend de um **perfil diferente**, que não tem a metade Agent autorizada. Este é um defeito conhecido do Hermes (veja [issue #134712](https://github.com/NousResearch/hermes-agent/issues/134712)).
+
+Nesta versão, o plugin:
+
+- Explica a causa provável e mostra como habilitar a metade Agent no backend/perfil adequado, preservando a timeline já carregada.
+- Não apaga os resultados anteriores durante falhas de rede/404; **Atualizar** refaz a descoberta.
+- Resolve corretamente a pasta compartilhada dos quadros quando `HERMES_HOME` aponta para `<instalacao>/profiles/<nome>`.
+
+**Limite importante:** não é possível fazer o plugin ignorar os controles de autorização do próprio Hermes. Se a API retornar `Plugin not found`, habilite a metade Agent no perfil que está atendendo a requisição (em Capabilities → Plugins, seletor do perfil) ou na configuração do perfil que iniciou `hermes serve`. Reinicie o backend somente se a metade Agent tiver sido instalada após o servidor subir. Não habilite indiscriminadamente todos os perfis apenas para esconder o problema; o código do plugin pode ler sessões de vários perfis.
 
 ## Funções
 
