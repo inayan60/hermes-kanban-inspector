@@ -147,7 +147,7 @@ def boards_profiles() -> dict:
     folder = h / "profiles"
     if folder.is_dir():
         profiles.extend(p.name for p in folder.iterdir() if p.is_dir() and _ID.fullmatch(p.name) and (p / "state.db").is_file())
-    return {"boards": sorted(set(boards)), "profiles": sorted(set(profiles)), "os": os.name, "home": str(h), "py_spy": bool(find_pyspy()), "version": "0.1.2"}
+    return {"boards": sorted(set(boards)), "profiles": sorted(set(profiles)), "os": os.name, "home": str(h), "py_spy": bool(find_pyspy()), "version": "0.1.3"}
 
 
 def tasks(board: str) -> list[dict]:
