@@ -27,7 +27,11 @@ try {
   )
   const pluginPath = join(dir, 'plugin.mjs')
   writeFileSync(pluginPath, rewritten)
-  const plugin = (await import(pathToFileURL(pluginPath).href)).default
+  const module = await import(pathToFileURL(pluginPath).href)
+  const plugin = module.default
+  const blocked = module.describeBackendError(new Error('404: {"detail":"Plugin not found"}'))
+  if (!blocked.includes('Agent') || !blocked.includes('404 Plugin not found')) throw new Error('404 guidance missing')
+  if (module.describeBackendError(new Error('timed out')) !== 'timed out') throw new Error('other errors must be preserved')
   if (plugin.id !== 'hermes-kanban-inspector') throw new Error('incorrect plugin ID')
   const contributions = []
   plugin.register({registerMany(items){contributions.push(...items)}})
