@@ -28,6 +28,22 @@ const FILTERS = [
   ['read', 'Leituras'], ['write', 'Escritas'], ['tool', 'Outras tools'],
   ['result', 'Resultados'], ['board', 'Kanban'], ['comment', 'Comentários'],
 ]
+// The 404 body comes from Hermes' per-profile plugin API gate, not SQLite.
+// Keep explicit remediation instead of reporting it as a broken timeline.
+export function describeBackendError(error) {
+  const raw = String(error?.message || error || 'Erro desconhecido')
+  if (/404[\s\S]*plugin not found/i.test(raw)) {
+    return 'API do Bot Inspector não habilitada no backend/perfil atendendo esta tela (404 Plugin not found). ' +
+      'No Hermes Desktop, abra Capabilities → Plugins → Bot Inspector, selecione o perfil usado pelo backend e habilite Agent. ' +
+      'Se já estiver habilitado, confira o perfil que iniciou o Hermes Desktop; o Hermes 0.22.7 possui um problema de roteamento de plugins entre perfis. ' +
+      'Depois clique em Atualizar. As informações já carregadas foram preservadas.'
+  }
+  if (/404[\s\S]*not found/i.test(raw)) {
+    return 'O backend respondeu 404, mas a rota solicitada não está disponível. ' +
+      'Verifique a instalação Agent do plugin e reinicie o backend após instalar uma versão nova. ' + raw
+  }
+  return raw
+}
 const glyph = { assistant: '◈', user: '●', terminal: '⌘', read: '↗', write: '✎', tool: '⚙', result: '↳', board: '▦', comment: '▧', message: '◈' }
 const stamp = (s) => s ? new Date(s).toLocaleString('pt-BR', {hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: '2-digit'}) : '—'
 const primaryButton = (children, onClick, disabled = false) => H('button', {type:'button', style: {...styles.btn, borderColor: palette.accent, opacity: disabled ? 0.5 : 1}, disabled, onClick}, children)
@@ -60,22 +76,23 @@ function Inspector({ctx}) {
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(new Set())
 
+  const [refreshKey, setRefreshKey] = useState(0)
   async function request(path, opts) {
-    try { setError(''); return await ctx.rest(path, opts) }
-    catch(e) { setError(String(e?.message || e)); throw e }
+    try { const result = await ctx.rest(path, opts); setError(''); return result }
+    catch(e) { setError(describeBackendError(e)); throw e }
   }
   useEffect(() => {
     let alive = true
-    ctx.rest('/inventory').then(x => {if (!alive) return; setInventory(x); setBoard(x.boards.includes('default')?'default':x.boards[0]||''); setProfile(x.profiles.includes('default')?'default':x.profiles[0]||'')})
-      .catch(e=>{ if(alive) setError(`Backend indisponível: ${String(e?.message || e)}. Ative a metade Agent do plugin e reinicie o gateway.`) })
+    ctx.rest('/inventory').then(x => {if (!alive) return; setInventory(x); setBoard(current=>x.boards.includes(current)?current:(x.boards.includes('default')?'default':x.boards[0]||'')); setProfile(current=>x.profiles.includes(current)?current:(x.profiles.includes('default')?'default':x.profiles[0]||'')); setError('')})
+      .catch(e=>{ if(alive) setError(describeBackendError(e)) })
     return ()=>{alive = false}
-  }, [ctx])
+  }, [ctx, refreshKey])
   useEffect(()=>{
-    let alive = true; setTargets([]); setTask(''); setSession(''); setItems([]); setReport(null); setDiagnosis(null); setRecovery(null); setStack(null)
+    let alive = true
     const path = mode === 'board' ? (board?`/tasks?board=${encodeURIComponent(board)}`:null) : (profile?`/sessions?profile=${encodeURIComponent(profile)}`:null)
-    if(path) ctx.rest(path).then(x=>{if(alive)setTargets(x.items||[]) }).catch(e=>{if(alive)setError(String(e?.message||e))})
+    if(path) ctx.rest(path).then(x=>{if(alive){setTargets(x.items||[]);setError('')} }).catch(e=>{if(alive)setError(describeBackendError(e))})
     return()=>{alive=false}
-  },[ctx, mode, board, profile])
+  },[ctx, mode, board, profile, refreshKey])
   async function loadTimeline() {
     const t = mode==='board' ? task : session
     if(!t)return
@@ -104,15 +121,15 @@ function Inspector({ctx}) {
 
   return H('main',{style:styles.page},
     H('div',{style:styles.header}, H('div',null,H('h1',{style:{fontSize:23,fontWeight:750,margin:'0 0 3px'}},'Bot Inspector'),small('Diagnóstico local • leitura de sessões e Kanban • sem chamadas ao modelo')),
-      H('div',{style:styles.row}, small(`v${inventory.version||'0.1.1'}`),secondaryButton('Copiar JSON',copyReport,!report&&!diagnosis),secondaryButton('Atualizar',()=>{loadTimeline();if(mode==='board'&&diagnosis)inspect()},!selectValue))),
+      H('div',{style:styles.row}, small(`v${inventory.version||'0.1.2'}`),secondaryButton('Copiar JSON',copyReport,!report&&!diagnosis),secondaryButton('Atualizar',()=>{setRefreshKey(v=>v+1)},!!busy))),
     error&&H('div',{role:'alert',style:{border:'1px solid #8d4c40',background:'#391f1b',color:'#ffd2cb',padding:12,borderRadius:8,marginBottom:12}},error),
     H('section',{style:{...styles.panel,marginBottom:12}},
       H('div',{style:{...styles.row,marginBottom:14}},
-        primaryButton('Quadro / tarefa',()=>setMode('board'),false),
-        secondaryButton('Bot / sessão',()=>setMode('profile'),false),
+        primaryButton('Quadro / tarefa',()=>{setMode('board');setTask('');setTargets([]);setItems([]);setReport(null);setDiagnosis(null)},false),
+        secondaryButton('Bot / sessão',()=>{setMode('profile');setSession('');setTargets([]);setItems([]);setReport(null);setDiagnosis(null)},false),
         small(`Modo atual: ${mode==='board'?'Kanban':'Bot'}`)),
       H('div',{style:styles.row},
-        mode==='board' ? itemSelect('QUADRO',board,setBoard,inventory.boards.map(v=>({value:v,label:v}))) : itemSelect('BOT / PROFILE',profile,setProfile,inventory.profiles.map(v=>({value:v,label:v}))),
+        mode==='board' ? itemSelect('QUADRO',board,v=>{setBoard(v);setTask('');setTargets([]);setReport(null);setItems([]);setDiagnosis(null)},inventory.boards.map(v=>({value:v,label:v}))) : itemSelect('BOT / PROFILE',profile,v=>{setProfile(v);setSession('');setTargets([]);setReport(null);setItems([]);setDiagnosis(null)},inventory.profiles.map(v=>({value:v,label:v}))),
         itemSelect(mode==='board'?'TAREFA':'SESSÃO',selectValue,updateSelection,options),
         H('div',{style:{alignSelf:'end'}},primaryButton(busy==='timeline'?'Lendo…':'Carregar timeline',loadTimeline,!selectValue||!!busy)),
         mode==='board' && H('div',{style:{alignSelf:'end'}},secondaryButton('Diagnosticar',inspect,!task||!!busy)))),
