@@ -36,9 +36,20 @@ _IS_WINDOWS = os.name == "nt"
 
 
 def home() -> Path:
+    """Resolve the shared installation root, also from a named-profile backend.
+
+    A profile-scoped `hermes serve --profile X` can set HERMES_HOME to
+    <root>/profiles/X.  Diagnostics intentionally read shared boards and
+    multiple profiles, so resolving relative to X would silently hide them.
+    This changes only diagnostic filesystem lookup, NOT plugin API permissions.
+    """
     explicit = os.environ.get("HERMES_HOME", "").strip()
     if explicit:
-        return Path(explicit).expanduser().resolve()
+        active_home = Path(explicit).expanduser().resolve()
+        if (active_home.parent.name.casefold() == "profiles" and
+                (active_home.parent.parent / "profiles").is_dir()):
+            return active_home.parent.parent
+        return active_home
     if os.name == "nt":
         return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))) / "hermes"
     return Path.home() / ".hermes"
@@ -136,7 +147,7 @@ def boards_profiles() -> dict:
     folder = h / "profiles"
     if folder.is_dir():
         profiles.extend(p.name for p in folder.iterdir() if p.is_dir() and _ID.fullmatch(p.name) and (p / "state.db").is_file())
-    return {"boards": sorted(set(boards)), "profiles": sorted(set(profiles)), "os": os.name, "home": str(h), "py_spy": bool(find_pyspy()), "version": "0.1.1"}
+    return {"boards": sorted(set(boards)), "profiles": sorted(set(profiles)), "os": os.name, "home": str(h), "py_spy": bool(find_pyspy()), "version": "0.1.2"}
 
 
 def tasks(board: str) -> list[dict]:
