@@ -88,6 +88,18 @@ class InspectorTests(unittest.TestCase):
             self.assertTrue(api.recovery_apply(preview['token'],'ENCERRAR GIT')['ok'])
             killer.assert_called_once()
 
+    def test_agent_entrypoint_registers_no_tools_or_hooks(self):
+        entry = MODULE.parents[1] / '__init__.py'
+        self.assertTrue(entry.is_file())
+        namespace = {}
+        exec(compile(entry.read_text(encoding='utf-8'), str(entry), 'exec'), namespace)
+
+        class NoAgentCalls:
+            def __getattr__(self, name):
+                raise AssertionError(f'Unexpected Agent plugin method: {name}')
+
+        self.assertIsNone(namespace['register'](NoAgentCalls()))
+
     def test_named_profile_backend_resolves_shared_installation(self):
         # Hermes Desktop may launch serve with HERMES_HOME=<root>/profiles/X.
         # The plugin must still resolve the shared board and peer state DBs.
