@@ -1,10 +1,9 @@
-"""Agent-side entrypoint for the unified Bot Inspector package.
+"""Unified Hermes Bot Inspector Agent half.
 
-The UI is in desktop/plugin.js and the HTTP API in dashboard/plugin_api.py.
-No agent tools, hooks or autonomous work are registered.
+The read-only (except explicitly confirmed Git child recovery) HTTP endpoints
+are mounted from dashboard/plugin_api.py. No Agent tools or hooks are added.
 """
 
-
 def register(ctx):
-    """Participate in Hermes plugin registration without adding agent capabilities."""
+    """Satisfy Hermes Agent plugin registration without adding model tools."""
     return None
