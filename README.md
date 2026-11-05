@@ -2,7 +2,7 @@
 
 Diagnósticos locais para o **Hermes Desktop**: escolha um quadro/cartão ou perfil/sessão, veja o histórico em timeline por tipo de evento, inspecione processos e capture pilhas Python com `py-spy`. Inclui recuperação **restrita a subprocessos Git pertencentes à execução escolhida**.
 
-> Versão inicial **0.1.2 (pré-lançamento)**. Testes automatizados executados com bancos SQLite simulados; interface e leitura de timeline **testadas no Hermes Desktop 0.22.7 pelo usuário**; a correção de 404 e a recuperação ainda não foram validadas em Windows. Não é uma correção definitiva para o bug de `version_info.py`; apenas ajuda a identificá-lo e, em um caso estritamente verificável, pode liberar o processo Git.
+> Versão inicial **0.1.3 (pré-lançamento)**. Testes automatizados executados com bancos SQLite simulados; interface e leitura de timeline **testadas no Hermes Desktop 0.22.7 pelo usuário**; a correção de 404 e a recuperação ainda não foram validadas em Windows. Não é uma correção definitiva para o bug de `version_info.py`; apenas ajuda a identificá-lo e, em um caso estritamente verificável, pode liberar o processo Git.
 
 ## Compatibilidade e fontes
 
@@ -31,6 +31,12 @@ hermes plugins install "file:///C:/CAMINHO/hermes-kanban-inspector" --enable
 ```
 
 Substitua `CAMINHO` pelo caminho real. Em **Capabilities → Plugins**, verifique as duas metades (Desktop / Agent). Reinicie o gateway após habilitar o backend. Não copie scripts para dentro da árvore `hermes-agent` nem edite `config.yaml` manualmente.
+
+## Plugin Doctor e atualização da interface
+
+O pacote inclui um `__init__.py` **sem tools ou hooks**, para passar pelo caminho de registro do `hermes plugins doctor`; a API continua declarada em `dashboard/manifest.json` e a interface em `desktop/plugin.js`. Não é necessário instalar tools nos perfis.
+
+O Hermes Desktop usa uma **cópia** em `desktop-plugins/hermes-kanban-inspector/plugin.js`. O `hermes plugins update` pode atualizar o pacote Agent sem que essa cópia do Desktop seja recarregada imediatamente. Depois de atualizar, use **Capabilities → Plugins → Rescan** (ou reinicie o Hermes Desktop). Em seguida execute `hermes plugins doctor hermes-kanban-inspector` para verificar se o aviso `stale copy` desapareceu. Não copie manualmente arquivos nem edite configuração de perfis para contornar essa sincronização.
 
 ## 404 intermitente ao alternar perfis (Hermes Desktop)
 
@@ -82,6 +88,7 @@ Nesta versão, o plugin:
 
 ```text
 plugin.yaml
+__init__.py
 README.md
 LICENSE
 .github/workflows/test.yml
