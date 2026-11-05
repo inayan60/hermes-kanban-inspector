@@ -121,7 +121,7 @@ function Inspector({ctx}) {
 
   return H('main',{style:styles.page},
     H('div',{style:styles.header}, H('div',null,H('h1',{style:{fontSize:23,fontWeight:750,margin:'0 0 3px'}},'Bot Inspector'),small('Diagnóstico local • leitura de sessões e Kanban • sem chamadas ao modelo')),
-      H('div',{style:styles.row}, small(`v${inventory.version||'0.1.2'}`),secondaryButton('Copiar JSON',copyReport,!report&&!diagnosis),secondaryButton('Atualizar',()=>{setRefreshKey(v=>v+1)},!!busy))),
+      H('div',{style:styles.row}, small(`v${inventory.version||'0.1.3'}`),secondaryButton('Copiar JSON',copyReport,!report&&!diagnosis),secondaryButton('Atualizar',()=>{setRefreshKey(v=>v+1)},!!busy))),
     error&&H('div',{role:'alert',style:{border:'1px solid #8d4c40',background:'#391f1b',color:'#ffd2cb',padding:12,borderRadius:8,marginBottom:12}},error),
     H('section',{style:{...styles.panel,marginBottom:12}},
       H('div',{style:{...styles.row,marginBottom:14}},
