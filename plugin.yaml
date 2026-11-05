@@ -1,5 +1,5 @@
 name: hermes-kanban-inspector
-version: 0.1.3
-description: Read-only Kanban/profile diagnostics, timeline and guarded Windows Git worker recovery.
+version: 0.2.0
+description: Multi-run Kanban audit, read-only timeline, usage, artifacts and guarded Windows Git worker recovery.
 author: inayan60
 license: MIT
