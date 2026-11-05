@@ -88,6 +88,15 @@ class InspectorTests(unittest.TestCase):
             self.assertTrue(api.recovery_apply(preview['token'],'ENCERRAR GIT')['ok'])
             killer.assert_called_once()
 
+    def test_named_profile_backend_resolves_shared_installation(self):
+        # Hermes Desktop may launch serve with HERMES_HOME=<root>/profiles/X.
+        # The plugin must still resolve the shared board and peer state DBs.
+        with patch.dict(os.environ, {'HERMES_HOME': str(self.h / 'profiles' / 'lenora-rh')}):
+            self.assertEqual(api.home(), self.h)
+            self.assertEqual(api.board_db('default'), self.h / 'kanban.db')
+            self.assertEqual(api.state_db('lenora-rh'), self.h / 'profiles' / 'lenora-rh' / 'state.db')
+            self.assertIn('lenora-rh', api.boards_profiles()['profiles'])
+
     def test_input_validation_and_redaction(self):
         with self.assertRaises(Exception):api.tasks('../etc')
         self.assertEqual(api.clip('Bearer sk-super-long-test-token-1234567'), 'Bearer [REDACTED]')
