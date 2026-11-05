@@ -36,18 +36,11 @@ _IS_WINDOWS = os.name == "nt"
 
 
 def home() -> Path:
-    """Resolve the shared installation root, also from a named-profile backend.
-
-    A profile-scoped `hermes serve --profile X` can set HERMES_HOME to
-    <root>/profiles/X.  Diagnostics intentionally read shared boards and
-    multiple profiles, so resolving relative to X would silently hide them.
-    This changes only diagnostic filesystem lookup, NOT plugin API permissions.
-    """
     explicit = os.environ.get("HERMES_HOME", "").strip()
     if explicit:
         active_home = Path(explicit).expanduser().resolve()
-        if (active_home.parent.name.casefold() == "profiles" and
-                (active_home.parent.parent / "profiles").is_dir()):
+        # Multi-profile servers use <root>/profiles/<profile> as HERMES_HOME.
+        if active_home.parent.name.casefold() == "profiles":
             return active_home.parent.parent
         return active_home
     if os.name == "nt":
@@ -106,6 +99,8 @@ def clip(s: Any, n=1500) -> str:
     if not isinstance(s, str):
         s = str(s)
     # Conservative best-effort redaction. Some secrets cannot be identified.
+    s = re.sub(r'(?i)("(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization|client_secret|cookie)"\s*:\s*")([^"]*)',
+               r'\1[REDACTED]', s)
     s = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._+\-/=]{10,}", r"\1[REDACTED]", s)
     s = re.sub(r"(?i)((?:api[_-]?key|access[_-]?token|secret|password|authorization|client_secret|cookie)\s*[=:]\s*)[^\s,;&\"']+", r"\1[REDACTED]", s)
     s = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b", "[REDACTED]", s)
@@ -147,7 +142,7 @@ def boards_profiles() -> dict:
     folder = h / "profiles"
     if folder.is_dir():
         profiles.extend(p.name for p in folder.iterdir() if p.is_dir() and _ID.fullmatch(p.name) and (p / "state.db").is_file())
-    return {"boards": sorted(set(boards)), "profiles": sorted(set(profiles)), "os": os.name, "home": str(h), "py_spy": bool(find_pyspy()), "version": "0.1.3"}
+    return {"boards": sorted(set(boards)), "profiles": sorted(set(profiles)), "os": os.name, "home": str(h), "py_spy": bool(find_pyspy()), "version": "0.2.0"}
 
 
 def tasks(board: str) -> list[dict]:
@@ -310,7 +305,7 @@ def tree_relation(p: dict[int, dict], pid: int, parent: int, cap=12) -> bool:
     seen = set()
     current = pid
     for _ in range(cap):
-        if current in seen or current not in p:
+        if current <= 0 or current in seen or current not in p:
             return False
         seen.add(current)
         current = int(p[current].get("ParentProcessId") or 0)
@@ -323,7 +318,7 @@ def relevant_processes(all_p: list[dict], anchor: list[int]) -> list[dict]:
     p = proc_map(all_p)
     selected = []
     for pid, obj in p.items():
-        if pid in anchor or any(tree_relation(p, pid, a) for a in anchor if a):
+        if pid > 0 and (pid in anchor or any(tree_relation(p, pid, a) for a in anchor if a > 0)):
             selected.append({"pid": pid, "ppid": obj.get("ParentProcessId"), "name": obj.get("Name"),
                              "command": clip(obj.get("CommandLine"), 260), "created": str(obj.get("CreationDate") or "")})
     return selected[:90]
@@ -361,20 +356,31 @@ def diagnose(board: str, task_id: str) -> dict:
     all_p = processes()
     pm = proc_map(all_p)
     related = relevant_processes(all_p, [worker_pid, managed_pid])
-    if gateway_pid in pm and gateway_pid not in {q["pid"] for q in related}:
+    if gateway_pid > 0 and gateway_pid in pm and gateway_pid not in {q["pid"] for q in related}:
         g = pm[gateway_pid]
         related.insert(0, {"pid": gateway_pid, "ppid": g.get("ParentProcessId"), "name": g.get("Name"),
                            "command": clip(g.get("CommandLine"), 260), "created": str(g.get("CreationDate") or "")})
     git = [x for x in related if str(x["name"]).lower() == "git.exe"]
     other_git = [x for x in all_p if str(x.get("Name", "")).lower() == "git.exe" and int(x.get("ProcessId") or 0) not in {x["pid"] for x in git}]
-    elapsed = max(0, int(time.time()) - int(info["runs"][0].get("started_at") or info["task"].get("started_at") or time.time())) if info["runs"] else 0
+    latest_run = info['runs'][0] if info['runs'] else {}
+    started = latest_run.get('started_at')
+    ended = latest_run.get('ended_at')
+    if started is not None and ended is not None:
+        elapsed = max(0, int(float(ended) - float(started)))
+        elapsed_source = 'run end-start'
+    elif started is not None and info['task'].get('status') == 'running':
+        elapsed = max(0, int(time.time() - float(started)))
+        elapsed_source = 'active run duration at snapshot'
+    else:
+        elapsed = None
+        elapsed_source = 'run end time unavailable (historical duration unknown)'
     no_steps = ll.get("total") == 0
-    stale = elapsed > 300 and no_steps and info["task"].get("status") == "running"
+    stale = elapsed is not None and elapsed > 300 and no_steps and info["task"].get("status") == "running"
     return {"board": board, "task_id": task_id, "profile": profile, "session_id": sid,
             "status": info["task"].get("status"), "run_id": info["runs"][0].get("id") if info["runs"] else None,
-            "worker_pid": worker_pid, "managed_pid": managed_pid, "gateway_pid": gateway_pid, "worker_alive": worker_pid in pm if all_p else None,
+            "worker_pid": worker_pid, "managed_pid": managed_pid, "gateway_pid": gateway_pid, "worker_alive": (worker_pid in pm) if worker_pid > 0 and info["task"].get("status") == "running" and all_p else None,
             "last_heartbeat_at": dt(info["runs"][0].get("last_heartbeat_at")) if info["runs"] else "",
-            "elapsed_seconds": elapsed, "message_count": ll.get("total"), "worker_executions": ll.get("executions", []),
+            "elapsed_seconds": elapsed, "elapsed_source": elapsed_source, "message_count": ll.get("total"), "worker_executions": ll.get("executions", []),
             "suspected_stall": stale, "related_processes": related,
             "verified_git_descendants": git, "unrelated_git_count": len(other_git), "patch": git_patch(),
             "py_spy_available": bool(find_pyspy()),
@@ -454,6 +460,455 @@ def recovery_apply(token: str, confirm: str) -> dict:
     return {"ok": True, "pid": item["pid"], "message": "Only the verified Git subprocess was terminated. Refresh the run to check recovery."}
 
 
+# A single bounded, read-only audit across every attempt on a Kanban card.
+# Data provenance is explicit; we do not backfill absent session links with guesses.
+_AUDIT_MAX_RUNS = 100
+_AUDIT_MAX_EVENTS = 10000
+_AUDIT_MAX_MESSAGES = 4500
+_AUDIT_MAX_ARTIFACTS = 300
+_USAGE_FIELDS = ('api_call_count', 'input_tokens', 'output_tokens', 'cache_read_tokens',
+                 'cache_write_tokens', 'reasoning_tokens')
+
+
+def _num(v):
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _event_run_id(e: dict, board: str, task_id: str) -> int | None:
+    run = _num(e.get('run_id'))
+    if run > 0:
+        return run
+    payload = load_json(e.get('payload')) or {}
+    if not isinstance(payload, dict):
+        return None
+    run = _num(payload.get('run_id'))
+    if run > 0:
+        return run
+    request = str(payload.get('request_id') or '')
+    if request.startswith('kanban:'):
+        try:
+            keys = json.loads(request[7:])
+            if keys[:2] == [board, task_id]:
+                run = _num(keys[2])
+                return run if run > 0 else None
+        except (ValueError, TypeError, IndexError):
+            pass
+    return None
+
+
+def _usage_row(r: dict, source: str) -> dict:
+    data = {field: _num(r.get(field)) for field in _USAGE_FIELDS}
+    data.update(model=clip(r.get('model'), 140), provider=clip(r.get('billing_provider'), 80),
+                task=clip(r.get('task'), 80), source=source,
+                estimated_cost_usd=float(r.get('estimated_cost_usd') or 0),
+                actual_cost_usd=float(r.get('actual_cost_usd') or 0),
+                cost_status=clip(r.get('cost_status'), 60),
+                first_seen=dt(r.get('first_seen')), last_seen=dt(r.get('last_seen')))
+    return data
+
+
+def _load_session(profile: str, sid: str, run_id: int, role='primary') -> dict:
+    clean_id(profile, 'profile')
+    if not sid or len(sid) > 256:
+        return {'id': clip(sid, 100), 'profile': profile, 'run_id': run_id,
+                'error': 'invalid session identifier', 'usage': [], 'events': []}
+    if not state_db(profile).is_file():
+        return {'id': sid, 'profile': profile, 'run_id': run_id, 'role': role,
+                'error': 'state.db unavailable for this profile', 'usage': [], 'events': []}
+    with closing(db_open(state_db(profile))) as con:
+        tables = _tables(con)
+        sr = record(con.execute('SELECT * FROM sessions WHERE id=?', (sid,)).fetchone()) if 'sessions' in tables else {}
+        if not sr:
+            return {'id': sid, 'profile': profile, 'run_id': run_id, 'role': role,
+                    'error': 'session not present in state.db', 'usage': [], 'events': []}
+        usage = []
+        if 'session_model_usage' in tables:
+            usage = [_usage_row(dict(r), 'session_model_usage') for r in
+                     con.execute('SELECT * FROM session_model_usage WHERE session_id=? ORDER BY model, task', (sid,))]
+        if not usage:
+            usage = [_usage_row(sr, 'sessions aggregate (per-model breakdown unavailable)')]
+        names = cols(con, 'messages') if 'messages' in tables else set()
+        total = 0
+        messages = []
+        if {'session_id', 'role'}.issubset(names):
+            total = con.execute('SELECT COUNT(*) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
+            order = 'id' if 'id' in names else 'rowid'
+            messages = [dict(r) for r in con.execute(
+                f'SELECT * FROM messages WHERE session_id=? ORDER BY {order} ASC LIMIT ?',
+                (sid, _AUDIT_MAX_MESSAGES))]
+        executions = []
+        receipts = []
+        if 'worker_executions' in tables:
+            executions = [dict(r) for r in con.execute(
+                'SELECT * FROM worker_executions WHERE session_id=? ORDER BY execution_id LIMIT 30', (sid,))]
+            if 'worker_receipts' in tables:
+                for e in executions:
+                    rows = con.execute('SELECT sequence, result_json FROM worker_receipts WHERE execution_id=? ORDER BY sequence DESC LIMIT 30', (e.get('execution_id'),))
+                    for r in rows:
+                        payload = load_json(r['result_json'])
+                        excerpt = clip(payload if payload is not None else r['result_json'], 850)
+                        if any(term in excerpt.lower() for term in ('error','traceback','exception','failed','exit_code','stderr')):
+                            receipts.append({'execution_id': clip(e.get('execution_id'), 140),
+                                             'sequence': r['sequence'], 'detail': excerpt,
+                                             'source': 'worker_receipts.result_json'})
+        child_ids = []
+        if 'sessions' in tables and 'parent_session_id' in cols(con, 'sessions'):
+            child_ids = [str(r[0]) for r in con.execute(
+                'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at LIMIT 24', (sid,))]
+
+    timeline = []
+    calls = []
+    tool_responses = []
+    for row in messages:
+        mid = _num(row.get('id'))
+        timestamp = dt(row.get('timestamp') if row.get('timestamp') is not None else row.get('created_at'))
+        role_msg = str(row.get('role') or '')
+        body = clip(row.get('content'), 1250)
+        for idx, call in enumerate(parse_calls(row.get('tool_calls'))):
+            c = {'time': timestamp, 'kind': call['kind'], 'title': call['name'],
+                 'detail': call['detail'], 'call_id': call['call_id'],
+                 'session_id': sid, 'profile': profile, 'run_id': run_id,
+                 'message_id': mid, 'source': 'messages.tool_calls'}
+            timeline.append(c)
+            calls.append(c)
+        if role_msg == 'tool':
+            target = clip(row.get('tool_name') or 'tool_result', 100)
+            call_id = clip(row.get('tool_call_id'), 120)
+            failure = bool(re.search(r'(?im)^\s*(?:error|exception|traceback|failed|exit code\s*[1-9])\b', body))
+            result = {'time': timestamp, 'kind': 'result', 'title': target, 'detail': body,
+                      'call_id': call_id, 'session_id': sid, 'profile': profile,
+                      'run_id': run_id, 'message_id': mid, 'source': 'messages.tool',
+                      'possible_error': failure}
+            timeline.append(result)
+            tool_responses.append(result)
+        elif role_msg in ('assistant', 'user', 'system') and body:
+            timeline.append({'time': timestamp, 'kind': role_msg if role_msg != 'system' else 'message',
+                             'title': role_msg, 'detail': body, 'session_id': sid, 'profile': profile,
+                             'run_id': run_id, 'message_id': mid, 'source': 'messages.content'})
+    # A repeated tool+sanitized argument is a signal, not proof of wasted work.
+    repeated = {}
+    for c in calls:
+        key = (c['title'], c['detail'])
+        repeated[key] = repeated.get(key, 0) + 1
+    duplicates = [{'tool': name, 'count': n, 'argument_preview': args[:240]}
+                  for (name, args), n in repeated.items() if n > 1]
+    return {'id': sid, 'profile': profile, 'run_id': run_id, 'role': role,
+            'model': clip(sr.get('model'), 150), 'title': clip(sr.get('title'), 150),
+            'source': clip(sr.get('source'), 90), 'started_at': dt(sr.get('started_at')),
+            'ended_at': dt(sr.get('ended_at')), 'usage': usage, 'events': timeline,
+            'message_count': total, 'returned_messages': len(messages),
+            'message_truncated': total > len(messages),
+            'tool_calls': len(calls), 'tool_results': len(tool_responses),
+            'possible_tool_errors': sum(int(e['possible_error']) for e in tool_responses),
+            'repeated_tool_signals': duplicates[:60], 'executions': [
+                {k: e.get(k) for k in ('execution_id', 'kind', 'status', 'last_sequence')} for e in executions],
+            'error_receipts': receipts[:50], 'child_session_ids': child_ids}
+
+
+def _read_log_evidence(task_id: str, runs: list[dict]) -> list[dict]:
+    """Bounded log snippets, not a full-folder scan. Only records matching task/session IDs."""
+    root = home()
+    files = [root / 'gateway.log', root / 'logs' / 'gateway.log',
+             root / 'logs' / 'hermes.log', root / 'logs' / 'gateway.jsonl']
+    # Run-specific logs are frequently under the profile's own logs directory.
+    for run in runs:
+        profile = str(run.get('profile') or '')
+        if profile and _ID.fullmatch(profile):
+            files.extend([root / 'profiles' / profile / 'gateway.log',
+                          root / 'profiles' / profile / 'logs' / 'gateway.log'])
+    needles = [task_id.lower()]
+    for run in runs:
+        for link in run.get('session_links', []):
+            if link.get('session_id'):
+                needles.append(str(link['session_id']).lower())
+    snippets = []
+    for p in list(dict.fromkeys(files))[:15]:
+        if not p.is_file() or p.is_symlink():
+            continue
+        try:
+            with p.open('rb') as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size-1_000_000))
+                data = f.read(1_000_000).decode('utf-8', errors='replace')
+            for line in data.splitlines():
+                if any(n and n in line.lower() for n in needles):
+                    snippets.append({'source': str(p), 'detail': clip(line, 1100)})
+                    if len(snippets) >= 40:
+                        return snippets
+        except OSError:
+            continue
+    return snippets
+
+
+def _live_worker_status(pid: int, fingerprint: Any) -> str:
+    """Only the Hermes dispatcher fingerprint can prove a PID is the same worker."""
+    if pid <= 0:
+        return 'unknown (PID absent or invalid)'
+    if not fingerprint or fingerprint == 'unverified':
+        return 'unknown (no verifiable Hermes process fingerprint)'
+    try:
+        # Native 0.22.7 function; read-only and resilient to unavailable platform probes.
+        from hermes_cli.kanban_db_dispatch import _process_fingerprint
+        live = _process_fingerprint(pid)
+    except (ImportError, OSError, ValueError, TypeError):
+        return 'unknown (cannot inspect native process fingerprint)'
+    if live is None:
+        return 'unknown (process identity unavailable)'
+    return 'active (Hermes fingerprint verified)' if str(live) == str(fingerprint) else 'ended/recycled (fingerprint mismatch)'
+
+
+def audit_task(board: str, task_id: str) -> dict:
+    clean_id(board, 'board')
+    clean_id(task_id, 'task')
+    with closing(db_open(board_db(board))) as con:
+        tables = _tables(con)
+        task = record(con.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone())
+        if not task:
+            raise HTTPException(404, 'Task not found')
+        runs = [record(r) for r in con.execute('SELECT * FROM task_runs WHERE task_id=? ORDER BY id ASC LIMIT ?',
+                                                (task_id, _AUDIT_MAX_RUNS))] if 'task_runs' in tables else []
+        events = [record(r) for r in con.execute('SELECT * FROM task_events WHERE task_id=? ORDER BY id ASC LIMIT ?',
+                                                 (task_id, _AUDIT_MAX_EVENTS))] if 'task_events' in tables else []
+        comments = [record(r) for r in con.execute('SELECT * FROM task_comments WHERE task_id=? ORDER BY id ASC LIMIT 1000',
+                                                   (task_id,))] if 'task_comments' in tables else []
+        attachments = [record(r) for r in con.execute('SELECT * FROM task_attachments WHERE task_id=? ORDER BY id ASC LIMIT ?',
+                                                      (task_id, _AUDIT_MAX_ARTIFACTS))] if 'task_attachments' in tables else []
+    run_map = {}
+    for row in runs:
+        rid = _num(row.get('id'))
+        run_map[rid] = {'id': rid, 'profile': row.get('profile') or '', 'status': row.get('status') or 'unknown',
+                        'outcome': row.get('outcome'), 'error': clip(row.get('error'), 1300),
+                        'summary': clip(row.get('summary'), 1200),
+                        'start': dt(row.get('started_at')), 'end': dt(row.get('ended_at')),
+                        'started_at_raw': row.get('started_at'), 'ended_at_raw': row.get('ended_at'),
+                        'worker_pid': _num(row.get('worker_pid')), 'last_heartbeat_at': dt(row.get('last_heartbeat_at')),
+                        'session_links': [], 'sessions': [], 'errors': [], 'event_count': 0,
+                        'process_state': 'finished (historical, not probed)' if row.get('status') != 'running' else _live_worker_status(_num(row.get('worker_pid')), row.get('worker_started_at')), 
+                        'messages': 0, 'tool_calls': 0, 'tool_results': 0,
+                        'usage': [], 'usage_attribution': 'direct session association'}
+    board_tl = []
+    participants = {}
+    def participation(who, role, source):
+        name = str(who or '').strip()
+        if not name or name.lower() in {'agent', 'desktop', 'system', 'user'} or len(name) > 100:
+            return
+        value = participants.setdefault(name, {'name': name, 'roles': [], 'sources': []})
+        if role not in value['roles']:
+            value['roles'].append(role)
+        if source not in value['sources']:
+            value['sources'].append(source)
+    participation(task.get('created_by'), 'creator', 'tasks.created_by')
+    participation(task.get('assignee'), 'assignee', 'tasks.assignee')
+    for r in runs:
+        participation(r.get('profile'), 'run executor', f'task_runs #{r.get("id")}')
+    for c in comments:
+        participation(c.get('author'), 'comment author', 'task_comments')
+        board_tl.append({'time': dt(c.get('created_at')), 'kind': 'comment', 'title': clip(c.get('author'), 90),
+                         'detail': clip(c.get('body'), 1400), 'run_id': None, 'source': 'task_comments'})
+    for e in events:
+        rid = _event_run_id(e, board, task_id)
+        payload = load_json(e.get('payload'))
+        parsed = payload if isinstance(payload, dict) else {}
+        if rid in run_map:
+            run_map[rid]['event_count'] += 1
+            if e.get('kind') == 'owner_admitted' and parsed.get('session_id'):
+                link = {'session_id': str(parsed['session_id']),
+                        'profile': run_map[rid]['profile'] or task.get('assignee') or '',
+                        'source': 'task_events.owner_admitted',
+                        'request_id': clip(parsed.get('request_id'), 160)}
+                dbname = str(parsed.get('db') or '')
+                m = re.search(r'[/\\]profiles[/\\]([^/\\]+)[/\\]state\.db$', dbname, re.I)
+                if m:
+                    link['profile'] = m.group(1)
+                if not any(s['session_id'] == link['session_id'] for s in run_map[rid]['session_links']):
+                    run_map[rid]['session_links'].append(link)
+            if e.get('kind') in {'worker_lost', 'spawn_failed', 'worker_failed', 'timed_out'} or (e.get('kind') == 'worker_result' and _num(parsed.get('exit_code')) != 0):
+                run_map[rid]['errors'].append({'kind': e.get('kind'), 'time': dt(e.get('created_at')),
+                                               'payload': clip(parsed or e.get('payload'), 1600),
+                                               'source': 'task_events'})
+        if e.get('kind') in {'review_requested', 'review_approved'}:
+            participation(parsed.get('reviewer'), 'reviewer', 'task_events')
+            participation(parsed.get('implementer'), 'implementer', 'task_events')
+        board_tl.append({'time': dt(e.get('created_at')), 'kind': 'board',
+                         'title': clip(e.get('kind'), 90), 'detail': clip(parsed or e.get('payload'), 1600),
+                         'run_id': rid, 'source': 'task_events'})
+    # A task's final human/agent acceptor may never have had a Kanban run.
+    # Mention in the card narrative is evidence of participation only, NEVER a session link.
+    narrative = str(task.get('result') or '') + '\n' + str(task.get('title') or '')
+    narrative += '\n' + '\n'.join(str(c.get('body') or '') for c in comments[-150:])
+    narrative += '\n' + '\n'.join(str(e.get('payload') or '') for e in events[-100:])
+    pf = home() / 'profiles'
+    if pf.is_dir():
+        for folder in pf.iterdir():
+            if folder.is_dir() and _ID.fullmatch(folder.name) and re.search(
+                    r'(?<![\w-])' + re.escape(folder.name) + r'(?![\w-])', narrative, re.I):
+                participation(folder.name, 'mentioned in card (no session inferred)', 'task narrative')
+
+    # Session access is read-only. One owner_admitted session belongs to its recorded run,
+    # independently of what profile now appears on the task card.
+    all_sessions = {}
+    limits = []
+    for run in run_map.values():
+        for link in run['session_links']:
+            sid = link['session_id']
+            prof = link['profile']
+            if not _ID.fullmatch(prof):
+                limits.append(f'Run {run["id"]}: missing valid profile for session {sid}')
+                continue
+            try:
+                data = _load_session(prof, sid, run['id'])
+            except (sqlite3.Error, OSError) as exc:
+                limits.append(f'Run {run["id"]}: state.db read failed ({type(exc).__name__})')
+                continue
+            run['sessions'].append(data)
+            identity = (prof, sid)
+            all_sessions[identity] = data
+            participation(prof, 'session owner', 'owner_admitted')
+            # Only direct child lineage is included; no cross-profile lookups by vague name.
+            for child_id in data.get('child_session_ids', [])[:24]:
+                child_key = (prof, child_id)
+                if child_key in all_sessions:
+                    continue
+                try:
+                    child = _load_session(prof, child_id, run['id'], role='child (parent_session_id)')
+                    run['sessions'].append(child)
+                    all_sessions[child_key] = child
+                except (sqlite3.Error, OSError):
+                    limits.append(f'Run {run["id"]}: child session could not be read')
+    appearances = {}
+    for run in run_map.values():
+        for ses in run['sessions']:
+            appearances.setdefault((ses['profile'], ses['id']), set()).add(run['id'])
+    totals = {key: 0 for key in _USAGE_FIELDS}
+    cost_total = 0.0
+    actual_cost_total = 0.0
+    timeline = list(board_tl)
+    for run in run_map.values():
+        run_usage = []
+        for ses in run['sessions']:
+            key = (ses['profile'], ses['id'])
+            shared = len(appearances.get(key, set())) > 1
+            if shared:
+                run['usage_attribution'] = 'shared session across runs; no exclusive run attribution'
+            run['messages'] += _num(ses.get('message_count'))
+            run['tool_calls'] += _num(ses.get('tool_calls'))
+            run['tool_results'] += _num(ses.get('tool_results'))
+            timeline.extend(ses.get('events', []))
+            if ses.get('message_truncated'):
+                limits.append(f'Run {run["id"]}: messages limited to {_AUDIT_MAX_MESSAGES} for {ses["id"]}')
+            if ses.get('error'):
+                limits.append(f'Run {run["id"]}: {ses["error"]}')
+            for u in ses.get('usage', []):
+                run_usage.append({**u, 'session_id': ses['id'], 'profile': ses['profile'],
+                                  'session_role': ses['role'], 'shared_between_runs': shared})
+        run['usage'] = run_usage
+        st, en = run.get('started_at_raw'), run.get('ended_at_raw')
+        if st is not None and en is not None and float(en) >= float(st):
+            run['duration_seconds'] = round(float(en) - float(st), 1)
+            run['duration_source'] = 'task_runs.ended_at - task_runs.started_at'
+        elif st is not None and run['status'] == 'running':
+            run['duration_seconds'] = round(max(0, time.time() - float(st)), 1)
+            run['duration_source'] = 'running as of audit time'
+        else:
+            # A terminal worker_result can supply a bounded fallback when ended_at is NULL.
+            terminal = [e for e in events if _event_run_id(e, board, task_id) == run['id']
+                        and e.get('kind') == 'worker_result' and e.get('created_at') is not None]
+            if st is not None and terminal and float(terminal[-1]['created_at']) >= float(st):
+                run['duration_seconds'] = round(float(terminal[-1]['created_at']) - float(st), 1)
+                run['duration_source'] = 'task_events.worker_result time - task_runs.started_at (fallback)'
+            else:
+                run['duration_seconds'] = None
+                run['duration_source'] = 'no recorded end; not inferred from card age' 
+        if run['error']:
+            run['errors'].append({'kind': 'task_runs.error', 'payload': run['error'], 'source': 'task_runs'})
+        if run['worker_pid'] <= 0:
+            run['process_state'] = 'unknown (invalid/absent PID)' if run['status'] == 'running' else 'finished (historical, PID absent)'
+    for ses in all_sessions.values():
+        for u in ses.get('usage', []):
+            for field in _USAGE_FIELDS:
+                totals[field] += u[field]
+            cost_total += u.get('estimated_cost_usd', 0.0)
+            actual_cost_total += u.get('actual_cost_usd', 0.0)
+    total_duration = None
+    if task.get('created_at') is not None and task.get('completed_at') is not None:
+        total_duration = max(0, float(task['completed_at']) - float(task['created_at']))
+    metrics = {'sessions': len(all_sessions), 'run_count': len(runs), 'events': len(events),
+               'comments': len(comments), 'artifacts': len(attachments),
+               'usage': totals, 'estimated_cost_usd': round(cost_total, 6), 'actual_cost_usd': round(actual_cost_total, 6),
+               'card_duration_seconds': round(total_duration, 1) if total_duration is not None else None,
+               'card_duration_source': 'tasks.completed_at - tasks.created_at' if total_duration is not None else 'not recorded'}
+    event_types = [str(e.get('kind')) for e in events]
+    findings = []
+    if 'blocked' in event_types and 'unblocked' in event_types:
+        findings.append({'type': 'blocked_unblocked', 'severity': 'info', 'text': 'Task blocked and later unblocked; inspect comments for scope changes.'})
+    if event_types.count('review_requested'):
+        findings.append({'type': 'review', 'severity': 'info', 'text': f'{event_types.count("review_requested")} review request(s) in task events.'})
+    for run in run_map.values():
+        if any(e['kind'] == 'worker_lost' for e in run['errors']):
+            findings.append({'type': 'worker_failure', 'severity': 'warning',
+                             'text': f'Run {run["id"]}: worker lost; check run error and log evidence. Card completion does not make this run successful.'})
+        repeated = sum(len(s.get('repeated_tool_signals', [])) for s in run['sessions'])
+        if repeated:
+            findings.append({'type': 'repeated_tool_calls', 'severity': 'info',
+                             'text': f'Run {run["id"]}: {repeated} repeated tool/argument pattern(s); possible retry, not proof of waste.'})
+    logs = _read_log_evidence(task_id, list(run_map.values()))
+    if any(e['kind'] == 'worker_lost' for run in run_map.values() for e in run['errors']) and not logs:
+        limits.append('Worker failure may have no persisted traceback; task events and exit_code alone do not establish the technical cause.')
+    artifacts_out = [{'id': _num(a.get('id')), 'filename': clip(a.get('filename'), 150),
+                      'bytes': _num(a.get('size')), 'time': dt(a.get('created_at')),
+                      'type': clip(a.get('content_type'), 100), 'uploaded_by': clip(a.get('uploaded_by'), 90),
+                      'previewable': str(a.get('filename') or '').lower().endswith(('.md','.txt','.json','.csv','.log'))}
+                     for a in attachments]
+    timeline.sort(key=lambda x: (x.get('time') or '', x.get('run_id') or 0))
+    # The global timeline is authoritative; avoid duplicating thousands of entries
+    # under every run/session in the response and JSON export.
+    for run in run_map.values():
+        for session_data in run['sessions']:
+            session_data.pop('events', None)
+    return {'version': '0.2.0', 'board': board, 'task_id': task_id,
+            'task': {'title': clip(task.get('title'), 190), 'status': task.get('status'),
+                     'assignee': task.get('assignee'), 'created_at': dt(task.get('created_at')),
+                     'completed_at': dt(task.get('completed_at'))},
+            'runs': list(run_map.values()), 'participants': list(participants.values()),
+            'artifacts': artifacts_out, 'timeline': timeline,
+            'summary': metrics, 'findings': findings, 'error_log_evidence': logs,
+            'limitations': limits, 'audited_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            'attribution_note': 'Only sessions directly linked by owner_admitted or parent_session_id are counted. Cache tokens are shown separately, never added a second time to input tokens.'}
+
+
+def artifact_preview(board: str, task_id: str, attachment_id: int) -> dict:
+    clean_id(board, 'board')
+    clean_id(task_id, 'task')
+    if attachment_id < 1:
+        raise HTTPException(400, 'Invalid attachment ID')
+    with closing(db_open(board_db(board))) as con:
+        if 'task_attachments' not in _tables(con):
+            raise HTTPException(404, 'Attachments not available')
+        row = con.execute('SELECT * FROM task_attachments WHERE id=? AND task_id=?', (attachment_id, task_id)).fetchone()
+    if not row:
+        raise HTTPException(404, 'Attachment not found')
+    a = record(row)
+    path = Path(a.get('stored_path') or '')
+    allowed = (home() / 'kanban' / 'attachments' / task_id).resolve()
+    file = path.resolve()
+    if not file.is_relative_to(allowed) or path.is_symlink() or not file.is_file():
+        raise HTTPException(403, 'Attachment path outside task or unavailable')
+    if file.suffix.lower() not in {'.md', '.txt', '.json', '.csv', '.log'}:
+        return {'id': attachment_id, 'filename': clip(a.get('filename'),150), 'previewable': False,
+                'notice': 'Binary/ZIP/PDF files are metadata-only. No automatic extraction.'}
+    size = file.stat().st_size
+    if size > 262144:
+        raise HTTPException(413, 'Artifact exceeds 256 KiB preview limit')
+    raw = file.read_text(encoding='utf-8-sig', errors='replace')
+    return {'id': attachment_id, 'filename': clip(a.get('filename'),150),
+            'previewable': True, 'bytes': size, 'content': clip(raw, 200000),
+            'notice': 'Best-effort sanitization only; inspect before copying externally.'}
+
+
 class RecoveryRequest(BaseModel):
     board: str = Field(max_length=100)
     task_id: str = Field(max_length=100)
@@ -518,3 +973,13 @@ async def get_recover_preview(req: RecoveryRequest):
 @router.post("/recover/apply")
 async def apply_recovery(req: ApplyRequest):
     return await asyncio.to_thread(recovery_apply, req.token, req.confirm)
+
+
+@router.get("/audit")
+async def audit_endpoint(board: str = "default", task_id: str = ""):
+    return await asyncio.to_thread(audit_task, board, task_id)
+
+
+@router.get("/artifact")
+async def artifact_endpoint(board: str = "default", task_id: str = "", attachment_id: int = 0):
+    return await asyncio.to_thread(artifact_preview, board, task_id, attachment_id)
